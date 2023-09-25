@@ -31,6 +31,8 @@ app.Run();
 namespace Controllers.Pokemon
 {
     using Clients.Pokemon;
+    using Models.Pokemon;
+    using System.Net;
 
     [ApiController]
     [Route("api/[controller]")]
@@ -43,16 +45,32 @@ namespace Controllers.Pokemon
 
         }
 
-        [HttpGet]
-        public async Task<ActionResult<object?>> GetPokemonAsync(string name)
+        [HttpGet("{name}")]
+        public async Task<ActionResult<Pokemon?>> GetPokemonAsync(string name)
         {
-            return await PokemonClient.GetDataAsync(name);
+            var (result, statusCode) = await PokemonClient.GetPokemonAsync(name);
+
+            if (result == null)
+            {
+                if (statusCode == HttpStatusCode.NotFound)
+                {
+                    return NotFound(new { message = "Pokemon not found" });
+                }
+                else
+                {
+                    return StatusCode(500, new { message = "An error occurred." });
+                }
+            }
+
+            return result;
         }
     }
 }
 
 namespace Clients.Pokemon
 {
+    using System.Net;
+    using Models.Pokemon;
     public class PokemonClient
     {
         public HttpClient Client { get; }
@@ -61,22 +79,46 @@ namespace Clients.Pokemon
             Client = httpClientFactory.CreateClient("PokemonClient");
         }
 
-        public async Task<object?> GetDataAsync(string name)
+        public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetPokemonAsync(string name)
         {
-            var response = await Client.GetAsync($"https://pokeapi.co/api/v2/pokemon/{name}");
-            response.EnsureSuccessStatusCode();
-            var results = await response.Content.ReadFromJsonAsync<object>();
-            return results;
+            return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon/{name}");
+        }
+
+        public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
+        {
+            return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon");
+        }
+
+        public async Task<(T? results, HttpStatusCode statusCode)> GetDataAsync<T>(string url)
+        {
+            HttpStatusCode statusCode = HttpStatusCode.InternalServerError;
+
+            try
+            {
+                var response = await Client.GetAsync(url);
+                statusCode = response.StatusCode;
+                response.EnsureSuccessStatusCode();
+                var results = await response.Content.ReadFromJsonAsync<T>();
+                return (results, statusCode);
+            }
+            catch (HttpRequestException e)
+            {
+                return (default, statusCode);
+            }
+            catch (Exception e)
+            {
+                return (default, HttpStatusCode.InternalServerError);
+            }
         }
     }
 }
 
 namespace Models.Pokemon
-{// Root myDeserializedClass = JsonSerializer.Deserialize<Root>(myJsonResponse);
+{
     public class Ability
     {
         [JsonPropertyName("ability")]
-        public AbilityData? AbilityData { get; set; } = new();
+        public Details? Details { get; set; } = new();
 
         [JsonPropertyName("is_hidden")]
         public bool? IsHidden { get; set; }
@@ -85,7 +127,7 @@ namespace Models.Pokemon
         public int? Slot { get; set; }
     }
 
-    public class AbilityData
+    public class Details
     {
         [JsonPropertyName("name")]
         public string? Name { get; set; }
@@ -238,22 +280,13 @@ namespace Models.Pokemon
         public string? FrontShiny { get; set; }
     }
 
-    public class Form
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
-
     public class GameIndex
     {
         [JsonPropertyName("game_index")]
-        public int? GameIndexValue { get; set; }
+        public int? Index { get; set; }
 
         [JsonPropertyName("version")]
-        public Version? Version { get; set; }
+        public Details? Version { get; set; }
     }
 
     public class GenerationI
@@ -379,10 +412,10 @@ namespace Models.Pokemon
     public class HeldItem
     {
         [JsonPropertyName("item")]
-        public Item? Item { get; set; }
+        public Details? Item { get; set; }
 
         [JsonPropertyName("version_details")]
-        public List<VersionDetail>? VersionDetails { get; set; }
+        public List<VersionDetails>? VersionDetails { get; set; } = new();
     }
 
     public class Home
@@ -409,40 +442,13 @@ namespace Models.Pokemon
         public string? FrontFemale { get; set; }
     }
 
-    public class Item
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
-
     public class Move
     {
         [JsonPropertyName("move")]
-        public MoveData? MoveData { get; set; }
+        public Details? Details { get; set; }
 
         [JsonPropertyName("version_group_details")]
-        public List<VersionGroupDetail>? VersionGroupDetails { get; set; }
-    }
-
-    public class MoveData
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
-
-    public class MoveLearnMethod
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
+        public List<VersionGroupDetails>? VersionGroupDetails { get; set; } = new();
     }
 
     public class OfficialArtwork
@@ -529,25 +535,25 @@ namespace Models.Pokemon
         public string? FrontTransparent { get; set; }
     }
 
-    public class Root
+    public class Pokemon
     {
         [JsonPropertyName("abilities")]
-        public List<Ability>? Abilities { get; set; }
+        public List<Ability>? Abilities { get; set; } = new();
 
         [JsonPropertyName("base_experience")]
         public int? BaseExperience { get; set; }
 
         [JsonPropertyName("forms")]
-        public List<Form>? Forms { get; set; }
+        public List<Details>? Forms { get; set; } = new();
 
         [JsonPropertyName("game_indices")]
-        public List<GameIndex>? GameIndices { get; set; }
+        public List<GameIndex>? GameIndices { get; set; } = new();
 
         [JsonPropertyName("height")]
         public int? Height { get; set; }
 
         [JsonPropertyName("held_items")]
-        public List<HeldItem>? HeldItems { get; set; }
+        public List<HeldItem>? HeldItems { get; set; } = new();
 
         [JsonPropertyName("id")]
         public int? Id { get; set; }
@@ -559,7 +565,7 @@ namespace Models.Pokemon
         public string? LocationAreaEncounters { get; set; }
 
         [JsonPropertyName("moves")]
-        public List<Move>? Moves { get; set; }
+        public List<Move> Moves { get; set; } = new();
 
         [JsonPropertyName("name")]
         public string? Name { get; set; }
@@ -568,19 +574,19 @@ namespace Models.Pokemon
         public int? Order { get; set; }
 
         [JsonPropertyName("past_types")]
-        public List<string?>? PastTypes { get; set; }
+        public List<object> PastTypes { get; set; } = new();
 
         [JsonPropertyName("species")]
-        public Species? Species { get; set; }
+        public Details? Species { get; set; }
 
         [JsonPropertyName("sprites")]
         public Sprites? Sprites { get; set; }
 
         [JsonPropertyName("stats")]
-        public List<Stat>? Stats { get; set; }
+        public List<Stat>? Stats { get; set; } = new();
 
         [JsonPropertyName("types")]
-        public List<Type>? Types { get; set; }
+        public List<Type>? Types { get; set; } = new();
 
         [JsonPropertyName("weight")]
         public int? Weight { get; set; }
@@ -617,15 +623,6 @@ namespace Models.Pokemon
 
         [JsonPropertyName("front_transparent")]
         public string? FrontTransparent { get; set; }
-    }
-
-    public class Species
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
     }
 
     public class Sprites
@@ -670,16 +667,7 @@ namespace Models.Pokemon
         public int? Effort { get; set; }
 
         [JsonPropertyName("stat")]
-        public StatData? StatData { get; set; }
-    }
-
-    public class StatData
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
+        public Details? Details { get; set; }
     }
 
     public class Type
@@ -688,16 +676,7 @@ namespace Models.Pokemon
         public int? Slot { get; set; }
 
         [JsonPropertyName("type")]
-        public TypeData? TypeData { get; set; }
-    }
-
-    public class TypeData
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
+        public Details? Details { get; set; }
     }
 
     public class UltraSunUltraMoon
@@ -715,43 +694,25 @@ namespace Models.Pokemon
         public string? FrontShinyFemale { get; set; }
     }
 
-    public class Version
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
-
-    public class VersionDetail
+    public class VersionDetails
     {
         [JsonPropertyName("rarity")]
         public int? Rarity { get; set; }
 
         [JsonPropertyName("version")]
-        public Version? Version { get; set; }
+        public Details? Version { get; set; }
     }
 
-    public class VersionGroup
-    {
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
-
-    public class VersionGroupDetail
+    public class VersionGroupDetails
     {
         [JsonPropertyName("level_learned_at")]
         public int? LevelLearnedAt { get; set; }
 
         [JsonPropertyName("move_learn_method")]
-        public MoveLearnMethod? MoveLearnMethod { get; set; }
+        public Details? MoveLearnMethod { get; set; }
 
         [JsonPropertyName("version_group")]
-        public VersionGroup? VersionGroup { get; set; }
+        public Details? VersionGroup { get; set; }
     }
 
     public class Versions
