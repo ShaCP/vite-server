@@ -1,9 +1,18 @@
-using System.Text.Json.Serialization;
+using NRedisStack;
+using NRedisStack.RedisStackCommands;
+using StackExchange.Redis;
 using Clients.Pokemon;
 using Microsoft.AspNetCore.Mvc;
 
-var builder = WebApplication.CreateBuilder(args);
+// redis
+ConnectionMultiplexer redis = ConnectionMultiplexer.Connect("localhost");
+IDatabase db = redis.GetDatabase();
 
+db.StringSet("foo", "bar");
+Console.WriteLine(db.StringGet("foo"));
+// redis end
+
+var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
 
 var httpClientName = "PokemonClient";
