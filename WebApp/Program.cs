@@ -4,14 +4,6 @@ using StackExchange.Redis;
 using Clients.Pokemon;
 using Microsoft.AspNetCore.Mvc;
 
-// redis
-ConnectionMultiplexer redis = ConnectionMultiplexer.Connect("localhost");
-IDatabase db = redis.GetDatabase();
-
-db.StringSet("foo", "bar");
-Console.WriteLine(db.StringGet("foo"));
-// redis end
-
 var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
 
@@ -24,6 +16,7 @@ builder.Services.AddCors(options => options.AddPolicy(corsPolicyName, (policy) =
 
 builder.Services.AddControllers();
 
+builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect("localhost"));
 builder.Services.AddHttpClient(httpClientName);
 
 builder.Services.AddScoped<PokemonClient>();
@@ -79,18 +72,41 @@ namespace Controllers.Pokemon
 namespace Clients.Pokemon
 {
     using System.Net;
+    using System.Text.Json;
+    using System.Text.Json.Nodes;
     using Models.Pokemon;
     public class PokemonClient
     {
-        public HttpClient Client { get; }
-        public PokemonClient(IHttpClientFactory httpClientFactory)
+        private readonly HttpClient client;
+        private readonly IDatabase redis;
+
+        public PokemonClient(IHttpClientFactory httpClientFactory, IConnectionMultiplexer muxer)
         {
-            Client = httpClientFactory.CreateClient("PokemonClient");
+            client = httpClientFactory.CreateClient("PokemonClient");
+            redis = muxer.GetDatabase();
         }
 
         public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetPokemonAsync(string name)
         {
-            return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon/{name}");
+            string? json;
+            var keyName = $"pokemon:{name}";
+            json = await redis.StringGetAsync(keyName);
+            if (string.IsNullOrEmpty(json))
+            {
+                var (jsonResults, isOk, statusCode) = await GetDataAsync($"https://pokeapi.co/api/v2/pokemon/{name}");
+                if (isOk == false)
+                {
+                    return (null, statusCode);
+                }
+                json = jsonResults;
+                var setTask = redis.StringSetAsync(keyName, jsonResults);
+                var expireTask = redis.KeyExpireAsync(keyName, TimeSpan.FromSeconds(3600));
+                await Task.WhenAll(setTask, expireTask);
+            }
+
+            var pokemon = JsonSerializer.Deserialize<Pokemon>(json);
+
+            return (pokemon, HttpStatusCode.OK);
         }
 
         public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
@@ -104,7 +120,7 @@ namespace Clients.Pokemon
 
             try
             {
-                var response = await Client.GetAsync(url);
+                var response = await client.GetAsync(url);
                 statusCode = response.StatusCode;
                 response.EnsureSuccessStatusCode();
                 var results = await response.Content.ReadFromJsonAsync<T>();
@@ -119,5 +135,30 @@ namespace Clients.Pokemon
                 return (default, HttpStatusCode.InternalServerError);
             }
         }
+
+        public async Task<(string? jsonResults, bool isOk, HttpStatusCode statusCode)> GetDataAsync(string url)
+        {
+            HttpStatusCode statusCode = HttpStatusCode.InternalServerError;
+
+            try
+            {
+                var response = await client.GetAsync(url);
+                statusCode = response.StatusCode;
+                response.EnsureSuccessStatusCode();
+                var results = await response.Content.ReadFromJsonAsync<JsonObject>();
+                var json = results.ToJsonString();
+                return (json, true, statusCode);
+            }
+            catch (HttpRequestException e)
+            {
+                return (default, false, statusCode);
+            }
+            catch (Exception e)
+            {
+                return (default, false, HttpStatusCode.InternalServerError);
+            }
+        }
+
+
     }
 }
