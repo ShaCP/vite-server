@@ -109,6 +109,23 @@ namespace Clients.Pokemon
             return (pokemon, HttpStatusCode.OK);
         }
 
+        public async Task<string> SetToRedis(string keyName, string requestUrl)
+        {
+            var json = await redis.StringGetAsync(keyName);
+            if (string.IsNullOrEmpty(json))
+            {
+                var (jsonResults, isOk, statusCode) = await GetDataAsync(url);
+                if (isOk == false)
+                {
+                    return (null, statusCode);
+                }
+                json = jsonResults;
+                var setTask = redis.StringSetAsync(keyName, jsonResults);
+                var expireTask = redis.KeyExpireAsync(keyName, TimeSpan.FromSeconds(3600));
+                await Task.WhenAll(setTask, expireTask);
+            }
+        }
+
         public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
         {
             return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon");
