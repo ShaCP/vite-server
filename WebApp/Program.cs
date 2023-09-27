@@ -1,5 +1,3 @@
-using NRedisStack;
-using NRedisStack.RedisStackCommands;
 using StackExchange.Redis;
 using Clients.Pokemon;
 using Microsoft.AspNetCore.Mvc;
@@ -73,7 +71,6 @@ namespace Clients.Pokemon
 {
     using System.Net;
     using System.Text.Json;
-    using System.Text.Json.Nodes;
     using Models.Pokemon;
     public class PokemonClient
     {
@@ -88,50 +85,40 @@ namespace Clients.Pokemon
 
         public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetPokemonAsync(string name)
         {
-            string? json;
             var keyName = $"pokemon:{name}";
-            json = await redis.StringGetAsync(keyName);
+            var (pokemon, statusCode) = await GetDataAsync<Pokemon>(keyName, $"https://pokeapi.co/api/v2/pokemon/{name}");
+            return (pokemon, statusCode);
+        }
+
+        // public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
+        // {
+        //     return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon");
+        // }
+
+        public async Task<(T? results, HttpStatusCode statusCode)> GetDataAsync<T>(string keyName, string url)
+        {
+            string? json = await redis.StringGetAsync(keyName);
+            T? results;
+            HttpStatusCode statusCode = HttpStatusCode.OK;
+
             if (string.IsNullOrEmpty(json))
             {
-                var (jsonResults, isOk, statusCode) = await GetDataAsync($"https://pokeapi.co/api/v2/pokemon/{name}");
+                (json, var isOk, statusCode) = await MakeRequestAsync(url);
                 if (isOk == false)
                 {
-                    return (null, statusCode);
+                    return (default, statusCode);
                 }
-                json = jsonResults;
-                var setTask = redis.StringSetAsync(keyName, jsonResults);
+                var setTask = redis.StringSetAsync(keyName, json);
                 var expireTask = redis.KeyExpireAsync(keyName, TimeSpan.FromSeconds(3600));
                 await Task.WhenAll(setTask, expireTask);
             }
 
-            var pokemon = JsonSerializer.Deserialize<Pokemon>(json);
+            results = string.IsNullOrEmpty(json) ? default : JsonSerializer.Deserialize<T>(json);
 
-            return (pokemon, HttpStatusCode.OK);
+            return (results, statusCode);
         }
 
-        public async Task<string> SetToRedis(string keyName, string requestUrl)
-        {
-            var json = await redis.StringGetAsync(keyName);
-            if (string.IsNullOrEmpty(json))
-            {
-                var (jsonResults, isOk, statusCode) = await GetDataAsync(url);
-                if (isOk == false)
-                {
-                    return (null, statusCode);
-                }
-                json = jsonResults;
-                var setTask = redis.StringSetAsync(keyName, jsonResults);
-                var expireTask = redis.KeyExpireAsync(keyName, TimeSpan.FromSeconds(3600));
-                await Task.WhenAll(setTask, expireTask);
-            }
-        }
-
-        public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
-        {
-            return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon");
-        }
-
-        public async Task<(T? results, HttpStatusCode statusCode)> GetDataAsync<T>(string url)
+        public async Task<(string? jsonResults, bool isOk, HttpStatusCode statusCode)> MakeRequestAsync(string url)
         {
             HttpStatusCode statusCode = HttpStatusCode.InternalServerError;
 
@@ -140,42 +127,17 @@ namespace Clients.Pokemon
                 var response = await client.GetAsync(url);
                 statusCode = response.StatusCode;
                 response.EnsureSuccessStatusCode();
-                var results = await response.Content.ReadFromJsonAsync<T>();
-                return (results, statusCode);
+                var jsonString = await response.Content.ReadAsStringAsync();
+                return (jsonString, true, statusCode);
             }
             catch (HttpRequestException e)
             {
-                return (default, statusCode);
+                return (null, false, statusCode);
             }
             catch (Exception e)
             {
-                return (default, HttpStatusCode.InternalServerError);
+                return (null, false, statusCode);
             }
         }
-
-        public async Task<(string? jsonResults, bool isOk, HttpStatusCode statusCode)> GetDataAsync(string url)
-        {
-            HttpStatusCode statusCode = HttpStatusCode.InternalServerError;
-
-            try
-            {
-                var response = await client.GetAsync(url);
-                statusCode = response.StatusCode;
-                response.EnsureSuccessStatusCode();
-                var results = await response.Content.ReadFromJsonAsync<JsonObject>();
-                var json = results.ToJsonString();
-                return (json, true, statusCode);
-            }
-            catch (HttpRequestException e)
-            {
-                return (default, false, statusCode);
-            }
-            catch (Exception e)
-            {
-                return (default, false, HttpStatusCode.InternalServerError);
-            }
-        }
-
-
     }
 }
