@@ -1,6 +1,9 @@
 using StackExchange.Redis;
-using Clients.Pokemon;
 using Microsoft.AspNetCore.Mvc;
+using Pokemon.Middleware;
+using Pokemon.Clients;
+using System.Net;
+using Pokemon.Filters;
 
 var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
@@ -12,7 +15,7 @@ builder.Services.AddCors(options => options.AddPolicy(corsPolicyName, (policy) =
     policy.WithOrigins("http://localhost:4000");
 }));
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options => options.Filters.Add(typeof(RedisCacheFilter)));
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect("localhost"));
 builder.Services.AddHttpClient(httpClientName);
@@ -21,18 +24,18 @@ builder.Services.AddScoped<PokemonClient>();
 
 
 var app = builder.Build();
-
+app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors(corsPolicyName);
+
 app.MapControllers();
 
 app.Run();
 
 
-namespace Controllers.Pokemon
+namespace Pokemon.Controllers.PokemonController
 {
-    using Clients.Pokemon;
+    using Clients;
     using Models.Pokemon;
-    using System.Net;
 
     [ApiController]
     [Route("api/[controller]")]
@@ -48,95 +51,152 @@ namespace Controllers.Pokemon
         [HttpGet("{name}")]
         public async Task<ActionResult<Pokemon?>> GetPokemonAsync(string name)
         {
-            var (result, statusCode) = await PokemonClient.GetPokemonAsync(name);
-
-            if (result == null)
+            try
             {
-                if (statusCode == HttpStatusCode.NotFound)
-                {
-                    return NotFound(new { message = "Pokemon not found" });
-                }
-                else
-                {
-                    return StatusCode(500, new { message = "An error occurred." });
-                }
+                var result = await PokemonClient.GetPokemonAsync(name);
+                return result;
             }
-
-            return result;
+            catch (HttpRequestException ex)
+            {
+                return ex.StatusCode switch
+                {
+                    HttpStatusCode.NotFound => NotFound(new { message = "Pokemon not found." }),
+                    _ => throw ex,
+                };
+            }
         }
     }
 }
 
-namespace Clients.Pokemon
+namespace Pokemon.Clients
 {
-    using System.Net;
-    using System.Text.Json;
     using Models.Pokemon;
     public class PokemonClient
     {
         private readonly HttpClient client;
-        private readonly IDatabase redis;
 
         public PokemonClient(IHttpClientFactory httpClientFactory, IConnectionMultiplexer muxer)
         {
             client = httpClientFactory.CreateClient("PokemonClient");
-            redis = muxer.GetDatabase();
         }
 
-        public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetPokemonAsync(string name)
+        public async Task<Pokemon?> GetPokemonAsync(string name)
         {
-            var keyName = $"pokemon:{name}";
-            var (pokemon, statusCode) = await GetDataAsync<Pokemon>(keyName, $"https://pokeapi.co/api/v2/pokemon/{name}");
-            return (pokemon, statusCode);
+            var pokemon = await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon/{name}");
+            return pokemon;
         }
 
-        // public async Task<(Pokemon? result, HttpStatusCode statusCode)> GetAllPokemonNamesAsync()
-        // {
-        //     return await GetDataAsync<Pokemon>($"https://pokeapi.co/api/v2/pokemon");
-        // }
-
-        public async Task<(T? results, HttpStatusCode statusCode)> GetDataAsync<T>(string keyName, string url)
+        public async Task<T?> GetDataAsync<T>(string url)
         {
-            string? json = await redis.StringGetAsync(keyName);
-            T? results;
-            HttpStatusCode statusCode = HttpStatusCode.OK;
+            var response = await client.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            var results = await response.Content.ReadFromJsonAsync<T>();
+            return results;
+        }
+    }
+}
 
-            if (string.IsNullOrEmpty(json))
-            {
-                (json, var isOk, statusCode) = await MakeRequestAsync(url);
-                if (isOk == false)
-                {
-                    return (default, statusCode);
-                }
-                var setTask = redis.StringSetAsync(keyName, json);
-                var expireTask = redis.KeyExpireAsync(keyName, TimeSpan.FromSeconds(3600));
-                await Task.WhenAll(setTask, expireTask);
-            }
 
-            results = string.IsNullOrEmpty(json) ? default : JsonSerializer.Deserialize<T>(json);
+namespace Pokemon.Middleware
+{
 
-            return (results, statusCode);
+    using System.Net;
+    using System.Text.Json;
+
+    public class ExceptionMiddleware
+    {
+        private readonly RequestDelegate _next;
+        private readonly ILogger<ExceptionMiddleware> _logger;
+
+        public ExceptionMiddleware(RequestDelegate next, ILogger<ExceptionMiddleware> logger)
+        {
+            _next = next;
+            _logger = logger;
         }
 
-        public async Task<(string? jsonResults, bool isOk, HttpStatusCode statusCode)> MakeRequestAsync(string url)
+        public async Task Invoke(HttpContext httpContext)
         {
-            HttpStatusCode statusCode = HttpStatusCode.InternalServerError;
-
             try
             {
-                var response = await client.GetAsync(url);
-                statusCode = response.StatusCode;
-                response.EnsureSuccessStatusCode();
-                var jsonString = await response.Content.ReadAsStringAsync();
-                return (jsonString, true, statusCode);
+                await _next(httpContext);
             }
-            catch (HttpRequestException e)
+            catch (HttpRequestException ex)
             {
-                return (null, false, statusCode);
+                _logger.LogError(ex, "An unhandled http request exception has occured while executing the request.");
+                await HandleExceptionAsync(httpContext, ex, ex.StatusCode);
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                return (null, false, statusCode);
+                _logger.LogError(ex, "An unhandled exception has occured while executing the request.");
+                await HandleExceptionAsync(httpContext, ex);
+            }
+        }
+
+        private static Task HandleExceptionAsync(HttpContext httpContext, Exception ex, HttpStatusCode? statusCode = HttpStatusCode.InternalServerError)
+        {
+            httpContext.Response.ContentType = "application/json";
+            httpContext.Response.StatusCode = (int)(statusCode ?? HttpStatusCode.InternalServerError);
+
+            return httpContext.Response.WriteAsync(new ErrorDetails
+            {
+                StatusCode = httpContext.Response.StatusCode,
+                Message = statusCode is null ? "Internal Server Error" : ex.Message
+            }.ToString());
+        }
+    }
+
+    internal class ErrorDetails
+    {
+        public int StatusCode { get; set; }
+        public string Message { get; set; } = "Error";
+
+        public override string ToString()
+        {
+            return JsonSerializer.Serialize(this);
+        }
+    }
+}
+
+namespace Pokemon.Filters
+{
+    using System.Text.Json;
+    using Microsoft.AspNetCore.Mvc.Filters;
+    public class RedisCacheFilter : IAsyncActionFilter
+    {
+        private readonly IDatabase redis;
+        public RedisCacheFilter(IConnectionMultiplexer muxer)
+        {
+            redis = muxer.GetDatabase();
+        }
+        public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+        {
+            var parameters = context.ActionArguments;
+            string key = $"{context.ActionDescriptor.RouteValues["Controller"]}:" ?? "";
+
+            foreach (var item in parameters)
+            {
+                key += $"{item.Key}:{item.Value}";
+            }
+
+            string? cachedData = await redis.StringGetAsync(key);
+
+            if (cachedData is not null)
+            {
+                var data = JsonSerializer.Deserialize<object>(cachedData);
+                context.Result = new JsonResult(data);
+            }
+            else
+            {
+                var executedContext = await next();
+
+                if (executedContext.Exception is null)
+                {
+                    if (executedContext.Result is ObjectResult objectResult)
+                    {
+                        var cacheData = JsonSerializer.Serialize(objectResult.Value);
+                        await redis.StringSetAsync(key, cacheData, TimeSpan.FromSeconds(3600));
+                    }
+                }
             }
         }
     }
