@@ -1,6 +1,6 @@
 namespace Models.Pokemon.ResultsData
 {
-    class ResultsData
+    public class ResultsData
     {
         public int? Count { get; set; }
         public string? Next { get; set; }

@@ -71,6 +71,8 @@ namespace Pokemon.Controllers.PokemonController
 namespace Pokemon.Clients
 {
     using Models.Pokemon;
+    using Models.Pokemon.ResultsData;
+
     public class PokemonClient
     {
         private readonly HttpClient client;
@@ -86,6 +88,12 @@ namespace Pokemon.Clients
             return pokemon;
         }
 
+        public async Task<ResultsData?> GetAllPokemonAsync()
+        {
+            var pokemons = await GetDataAsync<ResultsData>("https://pokeapi.co/api/v2/pokemon?limit=10000");
+            return pokemons;
+        }
+
         public async Task<T?> GetDataAsync<T>(string url)
         {
             var response = await client.GetAsync(url);
@@ -95,7 +103,6 @@ namespace Pokemon.Clients
         }
     }
 }
-
 
 namespace Pokemon.Middleware
 {
