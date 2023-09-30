@@ -4,6 +4,8 @@ using Pokemon.Middleware;
 using Pokemon.Clients;
 using System.Net;
 using Pokemon.Filters;
+using System.Text.Json;
+using Pokemon.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
@@ -206,5 +208,16 @@ namespace Pokemon.Filters
                 }
             }
         }
+    }
+}
+
+namespace Pokemon.Services.PokemonData
+{
+    using Models.Pokemon.ResultsData;
+
+    static public class PokemonData
+    {
+
+        static public List<ResultsData>? Pokemons { get; set; }
     }
 }
