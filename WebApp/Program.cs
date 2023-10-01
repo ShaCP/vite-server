@@ -6,6 +6,8 @@ using System.Net;
 using Pokemon.Filters;
 using System.Text.Json;
 using Pokemon.Services;
+using Models.Pokemon.ResultsData;
+using Pokemon.Services.PokemonDataService;
 
 var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
@@ -22,8 +24,8 @@ builder.Services.AddControllers(options => options.Filters.Add(typeof(RedisCache
 builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect("localhost"));
 builder.Services.AddHttpClient(httpClientName);
 
+builder.Services.AddScoped<PokemonDataService>();
 builder.Services.AddScoped<PokemonClient>();
-
 
 var app = builder.Build();
 app.UseMiddleware<ExceptionMiddleware>();
@@ -37,15 +39,18 @@ app.Run();
 namespace Pokemon.Controllers.PokemonController
 {
     using Clients;
-    using Models.Pokemon;
+    using global::Models.Pokemon;
+    using Pokemon.Services.PokemonDataService;
 
     [ApiController]
     [Route("api/[controller]")]
     public class PokemonController : ControllerBase
     {
         public PokemonClient PokemonClient { get; }
-        public PokemonController(PokemonClient pokemonClient)
+        public PokemonDataService PokemonDataService { get; }
+        public PokemonController(PokemonClient pokemonClient, PokemonDataService pokemonDataService)
         {
+            PokemonDataService = pokemonDataService;
             PokemonClient = pokemonClient;
 
         }
@@ -60,6 +65,7 @@ namespace Pokemon.Controllers.PokemonController
             }
             catch (HttpRequestException ex)
             {
+                HttpContext.Items["IsSuccessful"] = false;
                 return ex.StatusCode switch
                 {
                     HttpStatusCode.NotFound => NotFound(new { message = "Pokemon not found." }),
@@ -67,13 +73,20 @@ namespace Pokemon.Controllers.PokemonController
                 };
             }
         }
+
+
+        [HttpGet("matches/{name}")]
+        public async Task<ActionResult<List<string>>> GetPokemonMatchesAsync(string name)
+        {
+            var result = await PokemonDataService.GetPokemonMatches(name);
+            return result;
+        }
     }
 }
 
 namespace Pokemon.Clients
 {
-    using Models.Pokemon;
-    using Models.Pokemon.ResultsData;
+    using global::Models.Pokemon;
 
     public class PokemonClient
     {
@@ -102,6 +115,28 @@ namespace Pokemon.Clients
             response.EnsureSuccessStatusCode();
             var results = await response.Content.ReadFromJsonAsync<T>();
             return results;
+        }
+    }
+}
+
+namespace Pokemon.Services.PokemonDataService
+{
+    public class PokemonDataService
+    {
+        public Lazy<Task<ResultsData?>> AllPokemon { get; }
+
+        public PokemonDataService(PokemonClient pokemonClient)
+        {
+            AllPokemon = new Lazy<Task<ResultsData?>>(pokemonClient.GetAllPokemonAsync);
+        }
+
+        public async Task<List<string>> GetPokemonMatches(string name)
+        {
+            var allPokemon = await AllPokemon.Value;
+            var allPokemonNames = allPokemon?.Results.SelectMany(x => x.Name == null ? new List<string>() : new List<string>() { x.Name }).ToList() ?? new List<string>();
+            var normalizedPokemonNames = allPokemonNames.Select(x => x.ToLower().Replace(" ", ""));
+            var matches = allPokemonNames.Where(x => x.Contains(name.ToLower().Replace(" ", ""))).ToList();
+            return matches;
         }
     }
 }
@@ -198,7 +233,7 @@ namespace Pokemon.Filters
             {
                 var executedContext = await next();
 
-                if (executedContext.Exception is null)
+                if (executedContext.Exception is null && (bool)(context.HttpContext.Items["IsSuccessful"] ?? true))
                 {
                     if (executedContext.Result is ObjectResult objectResult)
                     {
@@ -211,9 +246,8 @@ namespace Pokemon.Filters
     }
 }
 
-namespace Pokemon.Services.PokemonData
+namespace Pokemon.Models.PokemonData
 {
-    using Models.Pokemon.ResultsData;
 
     static public class PokemonData
     {
