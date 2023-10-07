@@ -4,11 +4,7 @@ using Pokemon.Middleware;
 using Pokemon.Clients;
 using System.Net;
 using Pokemon.Filters;
-using System.Text.Json;
-using Pokemon.Services;
-using Models.Pokemon.ResultsData;
 using Pokemon.Services.PokemonDataService;
-
 var builder = WebApplication.CreateBuilder(args);
 var corsPolicyName = "pokemonCorsPolicy";
 
@@ -40,6 +36,7 @@ namespace Pokemon.Controllers.PokemonController
 {
     using Clients;
     using global::Models.Pokemon;
+    using Pokemon.Models.PokemonData;
     using Pokemon.Services.PokemonDataService;
 
     [ApiController]
@@ -76,10 +73,10 @@ namespace Pokemon.Controllers.PokemonController
 
 
         [HttpGet("matches/{name}")]
-        public async Task<ActionResult<List<string>>> GetPokemonMatchesAsync(string name)
+        public async Task<ActionResult<PokemonMatches>> GetPokemonMatchesAsync(string name, int page = 1)
         {
-            var result = await PokemonDataService.GetPokemonMatches(name);
-            return result;
+            var results = await PokemonDataService.GetPokemonMatches(name, page);
+            return Ok(results);
         }
     }
 }
@@ -87,12 +84,13 @@ namespace Pokemon.Controllers.PokemonController
 namespace Pokemon.Clients
 {
     using global::Models.Pokemon;
+    using global::Models.Pokemon.ResultsData;
 
     public class PokemonClient
     {
         private readonly HttpClient client;
 
-        public PokemonClient(IHttpClientFactory httpClientFactory, IConnectionMultiplexer muxer)
+        public PokemonClient(IHttpClientFactory httpClientFactory)
         {
             client = httpClientFactory.CreateClient("PokemonClient");
         }
@@ -121,19 +119,35 @@ namespace Pokemon.Clients
 
 namespace Pokemon.Services.PokemonDataService
 {
+    using global::Models.Pokemon.ResultsData;
+    using Pokemon.Models.PokemonData;
     public class PokemonDataService
     {
-        public Lazy<Task<ResultsData?>> AllPokemon { get; }
-
+        private Lazy<Task<ResultsData?>> AllPokemon { get; }
         public PokemonDataService(PokemonClient pokemonClient)
         {
             AllPokemon = new Lazy<Task<ResultsData?>>(pokemonClient.GetAllPokemonAsync);
         }
 
+        public async Task<PokemonMatches> GetPokemonMatches(string name, int page)
+        {
+            var matches = await GetPokemonMatches(name);
+            var resultsPerPage = 5;
+            var startIndex = resultsPerPage * (page - 1);
+            var results = matches.GetRange(startIndex, Math.Min(resultsPerPage, matches.Count - startIndex));
+            return new PokemonMatches
+            {
+                Page = page,
+                TotalPages = (matches.Count + resultsPerPage - 1) / resultsPerPage,
+                TotalCount = matches.Count,
+                Results = results
+            };
+        }
+
         public async Task<List<string>> GetPokemonMatches(string name)
         {
             var allPokemon = await AllPokemon.Value;
-            var allPokemonNames = allPokemon?.Results.SelectMany(x => x.Name == null ? new List<string>() : new List<string>() { x.Name }).ToList() ?? new List<string>();
+            var allPokemonNames = allPokemon?.Results.SelectMany(x => x.Name == null ? new() : new List<string>() { x.Name }).ToList() ?? new();
             var normalizedPokemonNames = allPokemonNames.Select(x => x.ToLower().Replace(" ", ""));
             var matches = allPokemonNames.Where(x => x.Contains(name.ToLower().Replace(" ", ""))).ToList();
             return matches;
@@ -203,8 +217,9 @@ namespace Pokemon.Middleware
 
 namespace Pokemon.Filters
 {
-    using System.Text.Json;
     using Microsoft.AspNetCore.Mvc.Filters;
+    using System.Text.Json;
+
     public class RedisCacheFilter : IAsyncActionFilter
     {
         private readonly IDatabase redis;
@@ -216,6 +231,7 @@ namespace Pokemon.Filters
         {
             var parameters = context.ActionArguments;
             string key = $"{context.ActionDescriptor.RouteValues["Controller"]}:" ?? "";
+            key += $"{context.ActionDescriptor.RouteValues["Action"]}:" ?? "";
 
             foreach (var item in parameters)
             {
@@ -226,8 +242,7 @@ namespace Pokemon.Filters
 
             if (cachedData is not null)
             {
-                var data = JsonSerializer.Deserialize<object>(cachedData);
-                context.Result = new JsonResult(data);
+                context.Result = new OkObjectResult(cachedData);
             }
             else
             {
@@ -237,7 +252,10 @@ namespace Pokemon.Filters
                 {
                     if (executedContext.Result is ObjectResult objectResult)
                     {
-                        var cacheData = JsonSerializer.Serialize(objectResult.Value);
+                        var cacheData = JsonSerializer.Serialize(objectResult.Value, new JsonSerializerOptions
+                        {
+                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                        });
                         await redis.StringSetAsync(key, cacheData, TimeSpan.FromSeconds(3600));
                     }
                 }
@@ -248,10 +266,11 @@ namespace Pokemon.Filters
 
 namespace Pokemon.Models.PokemonData
 {
-
-    static public class PokemonData
+    public class PokemonMatches
     {
-
-        static public List<ResultsData>? Pokemons { get; set; }
+        public int TotalCount { get; set; } = 0;
+        public int TotalPages { get; set; } = 0;
+        public int Page { get; set; } = 0;
+        public List<string> Results { set; get; } = new();
     }
 }
